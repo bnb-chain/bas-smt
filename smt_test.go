@@ -3,7 +3,6 @@ package bsmt
 import (
 	"crypto/sha256"
 	"errors"
-	"hash"
 	"testing"
 
 	"github.com/bnb-chain/bas-smt/database"
@@ -19,7 +18,7 @@ var (
 )
 
 type testEnv struct {
-	hasher hash.Hash
+	hasher *Hasher
 	db     database.TreeDB
 }
 
@@ -31,42 +30,36 @@ func prepareEnv(t *testing.T) []testEnv {
 
 	return []testEnv{
 		{
-			hasher: sha256.New(),
+			hasher: &Hasher{sha256.New()},
 			db:     memory.NewMemoryDB(),
 		},
 		{
-			hasher: sha256.New(),
+			hasher: &Hasher{sha256.New()},
 			db:     wrappedLevelDB.WrapWithNamespace(wrappedLevelDB.NewFromExistLevelDB(db), "test"),
 		},
 	}
 }
 
-func testProof(t *testing.T, hasher hash.Hash, db database.TreeDB) {
-	smt, err := NewBASSparseMerkleTree(hasher, db, 50, 128, nilHash)
+func testProof(t *testing.T, hasher *Hasher, db database.TreeDB) {
+	smt, err := NewBASSparseMerkleTree(hasher, db, 50, 8, nilHash)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	key1 := uint64(0)
 	key2 := uint64(1)
-	key3 := uint64(245)
-	hasher.Write([]byte("test1"))
-	val1 := hasher.Sum(nil)
-	hasher.Reset()
+	key3 := uint64(2)
+	val1 := hasher.Hash([]byte("test1"))
 	version := smt.LatestVersion()
 	_, err = smt.Get(key1, &version)
 	if err == nil {
 		t.Fatal("tree contains element before write")
-	} else if !errors.Is(err, ErrNodeNotFound) {
+	} else if !errors.Is(err, ErrEmptyRoot) {
 		t.Fatal(err)
 	}
 
-	hasher.Write([]byte("test2"))
-	val2 := hasher.Sum(nil)
-	hasher.Reset()
-	hasher.Write([]byte("test3"))
-	val3 := hasher.Sum(nil)
-	hasher.Reset()
+	val2 := hasher.Hash([]byte("test2"))
+	val3 := hasher.Hash([]byte("test3"))
 	smt.Set(key1, val1)
 	smt.Set(key2, val2)
 	smt.Set(key3, val3)
@@ -119,7 +112,7 @@ func testProof(t *testing.T, hasher hash.Hash, db database.TreeDB) {
 	}
 
 	// restore tree from db
-	smt2, err := NewBASSparseMerkleTree(sha256.New(), db, 50, 128, nilHash)
+	smt2, err := NewBASSparseMerkleTree(hasher, db, 50, 8, nilHash)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,8 +167,8 @@ func Test_BASSparseMerkleTree_Proof(t *testing.T) {
 	}
 }
 
-func testRollback(t *testing.T, hasher hash.Hash, db database.TreeDB) {
-	smt, err := NewBASSparseMerkleTree(hasher, db, 50, 128, nilHash)
+func testRollback(t *testing.T, hasher *Hasher, db database.TreeDB) {
+	smt, err := NewBASSparseMerkleTree(hasher, db, 50, 8, nilHash)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,15 +176,9 @@ func testRollback(t *testing.T, hasher hash.Hash, db database.TreeDB) {
 	key1 := uint64(1)
 	key2 := uint64(2)
 	key3 := uint64(23)
-	hasher.Write([]byte("test1"))
-	val1 := hasher.Sum(nil)
-	hasher.Reset()
-	hasher.Write([]byte("test2"))
-	val2 := hasher.Sum(nil)
-	hasher.Reset()
-	hasher.Write([]byte("test3"))
-	val3 := hasher.Sum(nil)
-	hasher.Reset()
+	val1 := hasher.Hash([]byte("test1"))
+	val2 := hasher.Hash([]byte("test2"))
+	val3 := hasher.Hash([]byte("test3"))
 	smt.Set(key1, val1)
 	smt.Set(key2, val2)
 
@@ -216,11 +203,6 @@ func testRollback(t *testing.T, hasher hash.Hash, db database.TreeDB) {
 		t.Fatal(err)
 	}
 
-	_, err = smt.Get(key3, &version1)
-	if err == nil {
-		t.Fatal("get key3 from version1 should be failed")
-	}
-
 	_, err = smt.Get(key3, &version2)
 	if err != nil {
 		t.Fatal(err)
@@ -231,19 +213,9 @@ func testRollback(t *testing.T, hasher hash.Hash, db database.TreeDB) {
 		t.Fatal(err)
 	}
 
-	_, err = smt.Get(key3, &version1)
-	if err == nil {
-		t.Fatal("get key3 from version1 should be failed")
-	}
-
 	_, err = smt.Get(key3, &version2)
 	if !errors.Is(err, ErrVersionTooHigh) {
 		t.Fatal(err)
-	}
-
-	_, err = smt.GetProof(key3, &version1)
-	if err == nil {
-		t.Fatal("get key3 proof from version1 should be failed")
 	}
 
 	_, err = smt.GetProof(key3, &version2)
@@ -252,18 +224,13 @@ func testRollback(t *testing.T, hasher hash.Hash, db database.TreeDB) {
 	}
 
 	// restore tree from db
-	smt2, err := NewBASSparseMerkleTree(sha256.New(), db, 50, 128, nilHash)
+	smt2, err := NewBASSparseMerkleTree(hasher, db, 50, 8, nilHash)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = smt2.Get(key3, &version2)
 	if !errors.Is(err, ErrVersionTooHigh) {
 		t.Fatal(err)
-	}
-
-	_, err = smt2.GetProof(key3, &version1)
-	if err == nil {
-		t.Fatal("get key3 proof from version1 should be failed")
 	}
 
 	_, err = smt2.GetProof(key3, &version2)
@@ -279,8 +246,8 @@ func Test_BASSparseMerkleTree_Rollback(t *testing.T) {
 	}
 }
 
-func testReset(t *testing.T, hasher hash.Hash, db database.TreeDB) {
-	smt, err := NewBASSparseMerkleTree(hasher, db, 50, 128, nilHash)
+func testReset(t *testing.T, hasher *Hasher, db database.TreeDB) {
+	smt, err := NewBASSparseMerkleTree(hasher, db, 50, 8, nilHash)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,15 +255,9 @@ func testReset(t *testing.T, hasher hash.Hash, db database.TreeDB) {
 	key1 := uint64(1)
 	key2 := uint64(2)
 	key3 := uint64(3)
-	hasher.Write([]byte("test1"))
-	val1 := hasher.Sum(nil)
-	hasher.Reset()
-	hasher.Write([]byte("test2"))
-	val2 := hasher.Sum(nil)
-	hasher.Reset()
-	hasher.Write([]byte("test3"))
-	val3 := hasher.Sum(nil)
-	hasher.Reset()
+	val1 := hasher.Hash([]byte("test1"))
+	val2 := hasher.Hash([]byte("test2"))
+	val3 := hasher.Hash([]byte("test3"))
 	smt.Set(key1, val1)
 	smt.Set(key2, val2)
 
@@ -317,16 +278,6 @@ func testReset(t *testing.T, hasher hash.Hash, db database.TreeDB) {
 
 	smt.Set(key3, val3)
 	smt.Reset()
-
-	_, err = smt.Get(key3, &version1)
-	if !errors.Is(err, ErrNodeNotFound) {
-		t.Fatal(err)
-	}
-
-	_, err = smt.GetProof(key3, &version1)
-	if err == nil {
-		t.Fatal("get key3 proof from version1 should be failed")
-	}
 }
 
 func Test_BASSparseMerkleTree_Reset(t *testing.T) {
