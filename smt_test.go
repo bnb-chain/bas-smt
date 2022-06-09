@@ -3,11 +3,17 @@ package bsmt
 import (
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"testing"
+	"time"
 
+	"github.com/bnb-chain/bas-smt/accumulators/merkleTree"
 	"github.com/bnb-chain/bas-smt/database"
 	wrappedLevelDB "github.com/bnb-chain/bas-smt/database/leveldb"
 	"github.com/bnb-chain/bas-smt/database/memory"
+	"github.com/consensys/gnark-crypto/ecc/bn254/fr/mimc"
+	"github.com/stretchr/testify/assert"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/syndtr/goleveldb/leveldb"
 	"github.com/syndtr/goleveldb/leveldb/storage"
@@ -283,6 +289,45 @@ func testReset(t *testing.T, hasher *Hasher, db database.TreeDB) {
 func Test_BASSparseMerkleTree_Reset(t *testing.T) {
 	for _, env := range prepareEnv(t) {
 		testReset(t, env.hasher, env.db)
+		env.db.Close()
+	}
+}
+
+func testZecrey(t *testing.T, hasher *Hasher, db database.TreeDB) {
+	elapse := time.Now()
+	hashState := merkleTree.MockState(6)
+	fmt.Println(time.Since(elapse))
+	leaves := merkleTree.CreateLeaves(hashState)
+	elapse = time.Now()
+	h := mimc.NewMiMC()
+	nilHash := h.Sum([]byte{})
+	fmt.Println("nil hash:", common.Bytes2Hex(nilHash))
+	h.Reset()
+	tree, err := merkleTree.NewTree(leaves, 5, nilHash, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Println("BuildTree tree time:", time.Since(elapse))
+	fmt.Println("height:", tree.MaxHeight)
+	fmt.Println("root:", merkleTree.ToString(tree.RootNode.Value))
+	fmt.Println("nil root:", merkleTree.ToString(tree.NilHashValueConst[0]))
+	elapse = time.Now()
+	// verify index belongs to len(t.leaves)
+	merkleProofs, helperMerkleProofs, err := tree.BuildMerkleProofs(4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Println("len:", len(merkleProofs))
+	fmt.Println("BuildTree proofs time:", time.Since(elapse))
+	fmt.Println("merkle proof helper:", helperMerkleProofs)
+	res := tree.VerifyMerkleProofs(merkleProofs, helperMerkleProofs)
+	assert.Equal(t, res, true, "BuildTree merkle proofs successfully")
+
+}
+
+func Test_Zecrey(t *testing.T) {
+	for _, env := range prepareEnv(t) {
+		testZecrey(t, env.hasher, env.db)
 		env.db.Close()
 	}
 }

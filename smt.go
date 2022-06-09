@@ -285,7 +285,7 @@ func (tree *BASSparseMerkleTree) VerifyProof(proof *Proof, version *Version) boo
 		}
 		index = index*2 + 4 - 16
 		if targetNode.Children[index] == nil {
-			tree.constructNode(targetNode, uint64(index), utils.BinaryToDecimal(proof.ProofHelper), depth)
+			tree.constructNode(targetNode, uint64(index), utils.BinaryToDecimal(proof.ProofHelper[:i]), depth)
 		}
 		targetNode = targetNode.Children[index]
 		depth += 4
