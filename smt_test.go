@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"errors"
+	"fmt"
+	"reflect"
 	"testing"
 
 	"github.com/bnb-chain/bas-smt/accumulators/merkleTree"
@@ -337,6 +339,8 @@ func testZecrey(t *testing.T, hasher *Hasher, db database.TreeDB) {
 		t.Fatal(err)
 	}
 
+	ex := hasher.Hash(hashState[4], hashState[5])
+	fmt.Println(ex)
 	bsmtProof, err := bsmt.GetProof(4, &version)
 	if err != nil {
 		t.Fatal(err)
@@ -345,8 +349,16 @@ func testZecrey(t *testing.T, hasher *Hasher, db database.TreeDB) {
 		t.Fatal("bsmt verify proof faild")
 	}
 
-	tree.VerifyMerkleProofs(merkleProofs, helperMerkleProofs)
+	if !reflect.DeepEqual(bsmtProof.MerkleProof, merkleProofs) {
+		t.Fatal("Merkle Proof is different from zecrey")
+	}
+	if !reflect.DeepEqual(bsmtProof.ProofHelper, helperMerkleProofs) {
+		t.Fatal("Merkle Proof helper is different from zecrey")
+	}
 
+	if !tree.VerifyMerkleProofs(bsmtProof.MerkleProof, bsmtProof.ProofHelper) {
+		t.Fatal("failed to verify proof with zecrey")
+	}
 }
 
 func Test_Zecrey(t *testing.T) {

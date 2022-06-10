@@ -23,10 +23,13 @@ import (
 	"errors"
 	"fmt"
 	"hash"
+	"io"
 	"log"
+	"os"
 	"strconv"
 
 	"github.com/bnb-chain/bas-smt/hash/bn254/zmimc"
+	"github.com/ethereum/go-ethereum/common"
 )
 
 func MockState(size int) [][]byte {
@@ -53,7 +56,7 @@ const (
 )
 
 /*
-	Tree: sparse merkle tree
+ Tree: sparse merkle tree
 */
 type Tree struct {
 	// root Node
@@ -69,7 +72,7 @@ type Tree struct {
 }
 
 /*
-	Node: node in the tree
+ Node: node in the tree
 */
 type Node struct {
 	// node value
@@ -85,8 +88,8 @@ type Node struct {
 }
 
 /*
-	CreateLeaves: transfer hashState to []node
-	@hashState: hash state
+ CreateLeaves: transfer hashState to []node
+ @hashState: hash state
 */
 func CreateLeaves(hashState [][]byte) []*Node {
 	// construct leaves
@@ -116,7 +119,7 @@ func CreateLeafNode(hashVal []byte) *Node {
 
 func (t *Tree) InitNilHashValueConst() (err error) {
 	nilHash := t.NilHashValueConst[0]
-	for i := 1; i < t.MaxHeight; i++ {
+	for i := 1; i <= t.MaxHeight; i++ {
 		var (
 			nHash []byte
 		)
@@ -136,7 +139,7 @@ func NewEmptyTree(maxHeight int, nilHash []byte, hFunc hash.Hash) (*Tree, error)
 		Height: maxHeight,
 	}
 	// init nil hash values for different heights
-	nilHashValueConst := make([][]byte, maxHeight)
+	nilHashValueConst := make([][]byte, maxHeight+1)
 	nilHashValueConst[0] = nilHash
 	// init tree
 	tree := &Tree{
@@ -152,19 +155,14 @@ func NewEmptyTree(maxHeight int, nilHash []byte, hFunc hash.Hash) (*Tree, error)
 		log.Println(errInfo)
 		return nil, errors.New(errInfo)
 	}
-	hFunc.Reset()
-	hFunc.Write(nilHashValueConst[maxHeight-1])
-	hFunc.Write(nilHashValueConst[maxHeight-1])
-	tree.RootNode.Value = hFunc.Sum(nil)
-	hFunc.Reset()
 	return tree, nil
 }
 
 /*
-	func: NewTree
-	params: leaves []*Node, maxHeight int, nilHash []byte, hFunc hash.Hash
-    desp: Use leaf nodes to initialize the tree,
-          and call the BuildTree method through the root to initialize the hash value of the entire tree
+	 func: NewTree
+	 params: leaves []*Node, maxHeight int, nilHash []byte, hFunc hash.Hash
+	 desp: Use leaf nodes to initialize the tree,
+		   and call the BuildTree method through the root to initialize the hash value of the entire tree
 */
 func NewTreeByMap(leaves map[int64]*Node, maxHeight int, nilHash []byte, hFunc hash.Hash) (*Tree, error) {
 	// define variables
@@ -187,14 +185,11 @@ func NewTreeByMap(leaves map[int64]*Node, maxHeight int, nilHash []byte, hFunc h
 	nilHashValueConst := make([][]byte, maxHeight+1)
 	nilHashValueConst[0] = nilHash
 	// scan map
-	maxIndex := int64(-1)
+	maxIndex := int64(0)
 	for index, _ := range leaves {
 		if index > maxIndex {
 			maxIndex = index
 		}
-	}
-	if maxIndex == -1 {
-		return NewEmptyTree(maxHeight, nilHash, hFunc)
 	}
 	var nodes []*Node
 	for i := int64(0); i <= maxIndex; i++ {
@@ -234,10 +229,10 @@ func NewTreeByMap(leaves map[int64]*Node, maxHeight int, nilHash []byte, hFunc h
 }
 
 /*
-	func: NewTree
-	params: leaves []*Node, maxHeight int, nilHash []byte, hFunc hash.Hash
-    desp: Use leaf nodes to initialize the tree,
-          and call the BuildTree method through the root to initialize the hash value of the entire tree
+	 func: NewTree
+	 params: leaves []*Node, maxHeight int, nilHash []byte, hFunc hash.Hash
+	 desp: Use leaf nodes to initialize the tree,
+		   and call the BuildTree method through the root to initialize the hash value of the entire tree
 */
 func NewTree(leaves []*Node, maxHeight int, nilHash []byte, hFunc hash.Hash) (*Tree, error) {
 	// define variables
@@ -283,7 +278,7 @@ func NewTree(leaves []*Node, maxHeight int, nilHash []byte, hFunc hash.Hash) (*T
 }
 
 /*
-	HashSubTrees: hash sub-tree nodes
+ HashSubTrees: hash sub-tree nodes
 */
 func (t *Tree) HashSubTrees(l []byte, r []byte) []byte {
 	t.HashFunc.Reset()
@@ -293,8 +288,36 @@ func (t *Tree) HashSubTrees(l []byte, r []byte) []byte {
 	return val
 }
 
+func (t *Tree) ResetTree(nodes []*Node) (err error) {
+
+	// get to the max height
+	if len(t.Leaves) == 0 {
+		log.Println("[ResetTree] smt BuildTree error, nodes length == 0")
+		return errors.New("[ResetTree] nodes length == 0")
+	} else {
+		if nodes[0].Height == t.MaxHeight && len(nodes) == 1 {
+			t.RootNode = nil
+			nodes[0] = nil
+			return nil
+		}
+	}
+	var parents []*Node
+	for i := 0; i < len(nodes); i += 2 {
+		parents = append(parents, nodes[i].Parent)
+		if nodes[i].Height != 0 { // trick code, only for testing tree update, the height check should be deleted.
+			nodes[i] = nil
+			if i+1 != len(nodes) {
+				nodes[i+1] = nil
+			}
+		}
+
+	}
+	err = t.ResetTree(parents)
+	return err
+}
+
 /*
-	BuildTree: build sparse merkle tree
+ BuildTree: build sparse merkle tree
 */
 func (t *Tree) BuildTree(nodes []*Node) (err error) {
 	// get to the max height
@@ -334,7 +357,7 @@ func (t *Tree) BuildTree(nodes []*Node) (err error) {
 }
 
 /*
-	BuildMerkleProofs: construct merkle proofs
+ BuildMerkleProofs: construct merkle proofs
 */
 func (t *Tree) BuildMerkleProofs(index int64) (
 	rMerkleProof [][]byte,
@@ -360,7 +383,7 @@ func (t *Tree) BuildMerkleProofs(index int64) (
 	// if index belongs to leaves
 	if index < int64(len(t.Leaves)) {
 		node := t.Leaves[index]
-		//proofs = append(proofs, node.Value)
+		proofs = append(proofs, node.Value)
 		for node.Parent != nil {
 			if node.Parent.Left == node {
 				if node.Parent.Right == nil {
@@ -381,7 +404,7 @@ func (t *Tree) BuildMerkleProofs(index int64) (
 		}
 	} else {
 		// add itself
-		//proofs = append(proofs, t.NilHashValueConst[0])
+		proofs = append(proofs, t.NilHashValueConst[0])
 		// get last index
 		lastIndex := int64(len(t.Leaves) - 1)
 		// get last leave node
@@ -398,13 +421,8 @@ func (t *Tree) BuildMerkleProofs(index int64) (
 			index /= 2
 			node = node.Parent
 		}
-		for node.Parent != nil && node.Parent.Right == node {
-			proofs = append(proofs, t.NilHashValueConst[node.Height])
-			proofHelpers = append(proofHelpers, Right)
-			node = node.Parent
-		}
 		proofs = append(proofs, node.Value)
-		proofHelpers = append(proofHelpers, Left)
+		proofHelpers = append(proofHelpers, Right)
 		node = node.Parent
 		for node.Parent != nil {
 			if node.Parent.Left == node {
@@ -606,10 +624,81 @@ func (t *Tree) insert(nodes []*Node) {
 	t.insert(parents)
 }
 
+func CheckFileIsExist(filename string) bool {
+	if _, err := os.Stat(filename); os.IsNotExist(err) {
+		return false
+	}
+	return true
+}
+
+func (t *Tree) Print(memo string, path string) error {
+	var (
+		f        *os.File
+		filename = path
+	)
+	if _, err := os.Stat(filename); os.IsNotExist(err) {
+		f, err = os.Create(filename)
+		fmt.Println("file doesn't exists")
+		if err != nil {
+			panic("Create file error")
+		}
+
+	} else {
+		f, err = os.OpenFile(filename, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0755)
+		if err != nil {
+			panic("OpenFile error")
+		}
+		fmt.Println("file exists")
+	}
+
+	defer f.Close()
+
+	// print Tree
+
+	// memo print
+	_, err := io.WriteString(f,
+		fmt.Sprintf("=========================Tree Print Start =========================="+
+			"%s\n", memo),
+	)
+	if err != nil {
+		log.Printf("[tree.print] unable to WriteString: %s\n", err.Error())
+		return err
+	}
+
+	_, err = io.WriteString(f,
+		fmt.Sprintf("root node value: %s\n:", common.Bytes2Hex(t.RootNode.Value)),
+	)
+	if err != nil {
+		log.Printf("[tree.print] unable to WriteString: %s", err.Error())
+		return err
+	}
+
+	for i, v := range t.Leaves {
+
+		_, err = io.WriteString(f,
+			fmt.Sprintf("leave %d value: %s\n:", i, common.Bytes2Hex(v.Value)),
+		)
+		if err != nil {
+			log.Printf("[tree.print] unable to WriteString: %s", err.Error())
+			return err
+		}
+	}
+
+	_, err = io.WriteString(f,
+		fmt.Sprintf("=========================Tree Print End =========================="),
+	)
+	if err != nil {
+		log.Printf("[tree.print] unable to WriteString: %s\n", err.Error())
+		return err
+	}
+
+	return nil
+}
+
 /*
-	VerifyMerkleProofs: verify merkle proofs
-	@inclusionProofs: inclusion proofs
-	@helperProofs: helper function
+ VerifyMerkleProofs: verify merkle proofs
+ @inclusionProofs: inclusion proofs
+ @helperProofs: helper function
 */
 func (t *Tree) VerifyMerkleProofs(inclusionProofs [][]byte, helperProofs []int) bool {
 	if len(inclusionProofs) != len(helperProofs)+1 {

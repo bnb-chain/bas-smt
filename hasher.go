@@ -7,9 +7,9 @@ type Hasher struct {
 }
 
 func (h *Hasher) Hash(inputs ...[]byte) []byte {
-	for _, input := range inputs {
-		h.hasher.Write(input)
+	h.hasher.Reset()
+	for i := range inputs {
+		h.hasher.Write(inputs[i])
 	}
-	defer h.hasher.Reset()
 	return h.hasher.Sum(nil)
 }
