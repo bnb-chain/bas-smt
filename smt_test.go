@@ -1,18 +1,15 @@
 package bsmt
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"errors"
-	"fmt"
 	"testing"
-	"time"
 
 	"github.com/bnb-chain/bas-smt/accumulators/merkleTree"
 	"github.com/bnb-chain/bas-smt/database"
 	wrappedLevelDB "github.com/bnb-chain/bas-smt/database/leveldb"
 	"github.com/bnb-chain/bas-smt/database/memory"
-	"github.com/consensys/gnark-crypto/ecc/bn254/fr/mimc"
-	"github.com/stretchr/testify/assert"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/syndtr/goleveldb/leveldb"
@@ -53,8 +50,8 @@ func testProof(t *testing.T, hasher *Hasher, db database.TreeDB) {
 	}
 
 	key1 := uint64(0)
-	key2 := uint64(1)
-	key3 := uint64(2)
+	key2 := uint64(255)
+	key3 := uint64(213)
 	val1 := hasher.Hash([]byte("test1"))
 	version := smt.LatestVersion()
 	_, err = smt.Get(key1, &version)
@@ -75,19 +72,28 @@ func testProof(t *testing.T, hasher *Hasher, db database.TreeDB) {
 		t.Fatal(err)
 	}
 
-	_, err = smt.Get(key1, &version)
+	hash1, err := smt.Get(key1, &version)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !bytes.Equal(hash1, val1) {
+		t.Fatalf("not equal to the original, want: %v, got: %v", val1, hash1)
+	}
 
-	_, err = smt.Get(key2, &version)
+	hash2, err := smt.Get(key2, &version)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !bytes.Equal(hash2, val2) {
+		t.Fatalf("not equal to the original, want: %v, got: %v", val2, hash2)
+	}
 
-	_, err = smt.Get(key3, &version)
+	hash3, err := smt.Get(key3, &version)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !bytes.Equal(hash3, val3) {
+		t.Fatalf("not equal to the original, want: %v, got: %v", val3, hash3)
 	}
 
 	proof, err := smt.GetProof(key1, &version)
@@ -123,19 +129,28 @@ func testProof(t *testing.T, hasher *Hasher, db database.TreeDB) {
 		t.Fatal(err)
 	}
 
-	_, err = smt2.Get(key1, &version)
+	hash11, err := smt2.Get(key1, &version)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !bytes.Equal(hash1, hash11) {
+		t.Fatalf("not equal to the original, want: %v, got: %v", hash1, hash11)
+	}
 
-	_, err = smt2.Get(key2, &version)
+	hash22, err := smt2.Get(key2, &version)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !bytes.Equal(hash2, hash22) {
+		t.Fatalf("not equal to the original, want: %v, got: %v", hash2, hash22)
+	}
 
-	_, err = smt2.Get(key3, &version)
+	hash33, err := smt2.Get(key3, &version)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !bytes.Equal(hash3, hash33) {
+		t.Fatalf("not equal to the original, want: %v, got: %v", hash3, hash33)
 	}
 
 	proof, err = smt2.GetProof(key1, &version)
@@ -143,7 +158,7 @@ func testProof(t *testing.T, hasher *Hasher, db database.TreeDB) {
 		t.Fatal(err)
 	}
 
-	if !smt2.VerifyProof(proof, &version) {
+	if !smt.VerifyProof(proof, &version) {
 		t.Fatal("verify proof1 failed")
 	}
 
@@ -152,7 +167,7 @@ func testProof(t *testing.T, hasher *Hasher, db database.TreeDB) {
 		t.Fatal(err)
 	}
 
-	if !smt2.VerifyProof(proof, &version) {
+	if !smt.VerifyProof(proof, &version) {
 		t.Fatal("verify proof2 failed")
 	}
 
@@ -161,7 +176,7 @@ func testProof(t *testing.T, hasher *Hasher, db database.TreeDB) {
 		t.Fatal(err)
 	}
 
-	if !smt2.VerifyProof(proof, &version) {
+	if !smt.VerifyProof(proof, &version) {
 		t.Fatal("verify proof2 failed")
 	}
 }
@@ -294,34 +309,43 @@ func Test_BASSparseMerkleTree_Reset(t *testing.T) {
 }
 
 func testZecrey(t *testing.T, hasher *Hasher, db database.TreeDB) {
-	elapse := time.Now()
 	hashState := merkleTree.MockState(6)
-	fmt.Println(time.Since(elapse))
 	leaves := merkleTree.CreateLeaves(hashState)
-	elapse = time.Now()
-	h := mimc.NewMiMC()
-	nilHash := h.Sum([]byte{})
-	fmt.Println("nil hash:", common.Bytes2Hex(nilHash))
-	h.Reset()
-	tree, err := merkleTree.NewTree(leaves, 5, nilHash, h)
+	tree, err := merkleTree.NewTree(leaves, 8, nilHash, hasher.hasher)
 	if err != nil {
 		t.Fatal(err)
 	}
-	fmt.Println("BuildTree tree time:", time.Since(elapse))
-	fmt.Println("height:", tree.MaxHeight)
-	fmt.Println("root:", merkleTree.ToString(tree.RootNode.Value))
-	fmt.Println("nil root:", merkleTree.ToString(tree.NilHashValueConst[0]))
-	elapse = time.Now()
+
 	// verify index belongs to len(t.leaves)
 	merkleProofs, helperMerkleProofs, err := tree.BuildMerkleProofs(4)
 	if err != nil {
 		t.Fatal(err)
 	}
-	fmt.Println("len:", len(merkleProofs))
-	fmt.Println("BuildTree proofs time:", time.Since(elapse))
-	fmt.Println("merkle proof helper:", helperMerkleProofs)
-	res := tree.VerifyMerkleProofs(merkleProofs, helperMerkleProofs)
-	assert.Equal(t, res, true, "BuildTree merkle proofs successfully")
+
+	bsmt, err := NewBASSparseMerkleTree(hasher, db, 50, 8, nilHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < len(hashState); i++ {
+		err = bsmt.Set(uint64(i), hashState[i])
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	version, err := bsmt.Commit()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bsmtProof, err := bsmt.GetProof(4, &version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bsmt.VerifyProof(bsmtProof, &version) {
+		t.Fatal("bsmt verify proof faild")
+	}
+
+	tree.VerifyMerkleProofs(merkleProofs, helperMerkleProofs)
 
 }
 

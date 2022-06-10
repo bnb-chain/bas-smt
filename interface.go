@@ -4,7 +4,7 @@ type (
 	Version          uint64
 	SparseMerkleTree interface {
 		Get(key uint64, version *Version) ([]byte, error)
-		Set(key uint64, val []byte)
+		Set(key uint64, val []byte) error
 		IsEmpty() bool
 		Root() []byte
 		GetProof(key uint64, version *Version) (*Proof, error)

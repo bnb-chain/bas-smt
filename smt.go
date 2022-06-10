@@ -19,17 +19,20 @@ var (
 )
 
 func storageFullTreeNodeKey(depth uint8, path uint64) []byte {
-	depthBuf := make([]byte, 8)
 	pathBuf := make([]byte, 8)
-	binary.BigEndian.PutUint64(depthBuf, uint64(depth))
 	binary.BigEndian.PutUint64(pathBuf, path)
-	return bytes.Join([][]byte{storaegFullTreeNodePrefix, depthBuf, pathBuf}, sep)
+	return bytes.Join([][]byte{storaegFullTreeNodePrefix, {depth}, pathBuf}, sep)
 }
 
 var _ SparseMerkleTree = (*BASSparseMerkleTree)(nil)
 
-func NewBASSparseMerkleTree(hasher *Hasher, db database.TreeDB, maxVersionNum, maxDepth uint64, nilHash []byte,
+func NewBASSparseMerkleTree(hasher *Hasher, db database.TreeDB, maxVersionNum uint64, maxDepth uint8, nilHash []byte,
 	opts ...Option) (SparseMerkleTree, error) {
+
+	if maxDepth%4 != 0 {
+		return nil, ErrInvalidDepth
+	}
+
 	smt := &BASSparseMerkleTree{
 		maxDepth:      maxDepth,
 		maxVersionNum: maxVersionNum,
@@ -51,13 +54,13 @@ func NewBASSparseMerkleTree(hasher *Hasher, db database.TreeDB, maxVersionNum, m
 	return smt, nil
 }
 
-func constuctNilHashes(maxDepth uint64, nilHash []byte, hasher *Hasher) map[uint8][]byte {
+func constuctNilHashes(maxDepth uint8, nilHash []byte, hasher *Hasher) map[uint8][]byte {
 	if maxDepth == 0 {
 		return map[uint8][]byte{0: nilHash}
 	}
 	nilHashes := make(map[uint8][]byte, maxDepth)
 	nilHashes[0] = nilHash
-	for i := 0; i < int(maxDepth); i++ {
+	for i := 0; i <= int(maxDepth); i++ {
 		nilHash = hasher.Hash(nilHash, nilHash)
 		nilHashes[uint8(i)] = nilHash
 	}
@@ -105,16 +108,43 @@ type BASSparseMerkleTree struct {
 	root          *TreeNode
 	lastSaveRoot  *TreeNode
 	journal       map[journalKey]*TreeNode
-	maxDepth      uint64
+	maxDepth      uint8
 	maxVersionNum uint64
 	nilHashes     map[uint8][]byte
 	hasher        *Hasher
 	db            database.TreeDB
 }
 
+func (tree *BASSparseMerkleTree) extendNode(node *TreeNode, nibble, path uint64, depth uint8) {
+	if node.Children[nibble] == nil {
+		node.Children[nibble] = NewTreeNode(depth, path, tree.nilHashes, tree.hasher)
+	}
+	if !node.Children[nibble].Extended() {
+		tree.constructNode(node, nibble, path, depth)
+	}
+
+}
+
+func (tree *BASSparseMerkleTree) constructNode(node *TreeNode, nibble, path uint64, depth uint8) {
+	rlpBytes, _ := tree.db.Get(storageFullTreeNodeKey(depth, path))
+	if rlpBytes != nil {
+		stroageTreeNode := &StorageTreeNode{}
+		if rlp.DecodeBytes(rlpBytes, stroageTreeNode) == nil {
+			node.Children[nibble] = stroageTreeNode.ToTreeNode(
+				depth, path, tree.nilHashes, tree.hasher)
+			return
+		}
+	}
+	node.Children[nibble] = NewTreeNode(depth, path, tree.nilHashes, tree.hasher)
+}
+
 func (tree *BASSparseMerkleTree) Get(key uint64, version *Version) ([]byte, error) {
 	if tree.IsEmpty() {
 		return nil, ErrEmptyRoot
+	}
+
+	if key >= 1<<tree.maxDepth {
+		return nil, ErrInvalidKey
 	}
 
 	if version == nil {
@@ -130,13 +160,11 @@ func (tree *BASSparseMerkleTree) Get(key uint64, version *Version) ([]byte, erro
 	}
 
 	targetNode := tree.root
-	var depth uint8 = 0
+	var depth uint8 = 4
 	for i := 0; i < int(tree.maxDepth)/4; i++ {
-		nibbleKey := key >> (int(tree.maxDepth) - (i+1)*4)
-		nibble := nibbleKey & 0x0000000f
-		if targetNode.Children[nibble] == nil {
-			tree.constructNode(targetNode, nibble, nibbleKey, depth)
-		}
+		path := key >> (int(tree.maxDepth) - (i+1)*4)
+		nibble := path & 0x0000000f
+		tree.extendNode(targetNode, nibble, path, depth)
 		targetNode = targetNode.Children[nibble]
 
 		depth += 4
@@ -145,50 +173,37 @@ func (tree *BASSparseMerkleTree) Get(key uint64, version *Version) ([]byte, erro
 	return targetNode.Root(), nil
 }
 
-func (tree *BASSparseMerkleTree) constructNode(node *TreeNode, nibble, path uint64, depth uint8) {
-	for i := uint64(0); i < 16; i++ {
-		treeNode := NewTreeNode(depth, path-nibble+i, tree.nilHashes, tree.hasher)
-		rlpBytes, _ := tree.db.Get(storageFullTreeNodeKey(depth, path-nibble+i))
-		if rlpBytes != nil {
-			stroageTreeNode := &StorageTreeNode{}
-			if rlp.DecodeBytes(rlpBytes, stroageTreeNode) == nil {
-				node.Children[i] = stroageTreeNode.ToTreeNode(
-					depth, path-nibble+i, tree.nilHashes, tree.hasher)
-			}
-			continue
-		}
-
-		node.Children[i] = treeNode
+func (tree *BASSparseMerkleTree) Set(key uint64, val []byte) error {
+	if key >= 1<<tree.maxDepth {
+		return ErrInvalidKey
 	}
-}
-
-func (tree *BASSparseMerkleTree) Set(key uint64, val []byte) {
 	newVersion := tree.version + 1
 
 	targetNode := tree.root
-	var depth uint8 = 0
+	var depth uint8 = 4
 	var parentNodes []*TreeNode
 	for i := 0; i < int(tree.maxDepth)/4; i++ {
-		nibbleKey := key >> (int(tree.maxDepth) - (i+1)*4)
-		nibble := nibbleKey & 0x0000000f
+		path := key >> (int(tree.maxDepth) - (i+1)*4)
+		nibble := path & 0x0000000f
 		parentNodes = append(parentNodes, targetNode)
-		if targetNode.Children[nibble] == nil {
-			tree.constructNode(targetNode, nibble, nibbleKey, depth)
-		}
+		tree.extendNode(targetNode, nibble, path, depth)
 		targetNode = targetNode.Children[nibble]
 
 		depth += 4
 	}
-	targetNode = targetNode.Set(val, newVersion)
+	targetNode = targetNode.Set(val, newVersion) // leaf
 	tree.journal[journalKey{targetNode.depth, targetNode.path}] = targetNode
 	// recompute root hash
 	for i := len(parentNodes) - 1; i >= 0; i-- {
-		nibble := key >> (int(tree.maxDepth) - (i+1)*4) & 0x0000000f
-		targetNode = parentNodes[i].SetChildren(targetNode, int(nibble))
-		targetNode.ComputeInternalHash(newVersion)
+		childNibble := key >> (int(tree.maxDepth) - (i+1)*4) & 0x0000000f
+		targetNode = parentNodes[i].SetChildren(targetNode, int(childNibble))
+		if targetNode.Extended() {
+			targetNode.ComputeInternalHash(newVersion)
+		}
 		tree.journal[journalKey{targetNode.depth, targetNode.path}] = targetNode
 	}
 	tree.root = targetNode
+	return nil
 }
 
 func (tree *BASSparseMerkleTree) IsEmpty() bool {
@@ -204,6 +219,10 @@ func (tree *BASSparseMerkleTree) GetProof(key uint64, version *Version) (*Proof,
 		return nil, ErrEmptyRoot
 	}
 
+	if key >= 1<<tree.maxDepth {
+		return nil, ErrInvalidKey
+	}
+
 	if version == nil {
 		version = &tree.version
 	}
@@ -217,38 +236,48 @@ func (tree *BASSparseMerkleTree) GetProof(key uint64, version *Version) (*Proof,
 	}
 
 	targetNode := tree.root
-	var depth uint8 = 0
+	var neighborNode *TreeNode
+	var depth uint8 = 4
 	var proofs [][]byte
 	var helpers []int
 
 	for i := 0; i < int(tree.maxDepth)/4; i++ {
-		nibbleKey := key >> (int(tree.maxDepth) - (i+1)*4)
-		nibble := nibbleKey & 0x0000000f
-		if targetNode.Children[nibble] == nil {
-			tree.constructNode(targetNode, nibble, nibbleKey, depth)
+		path := key >> (int(tree.maxDepth) - (i+1)*4)
+		nibble := path & 0x0000000f
+		tree.extendNode(targetNode, nibble, path, depth)
+		tree.extendNode(targetNode, nibble^1, path-nibble+nibble^1, depth)
+		if neighborNode == nil {
+			proofs = append(proofs, tree.nilHashes[depth-4])
+		} else {
+			proofs = append(proofs, neighborNode.Root())
 		}
-		proofs = append(proofs, targetNode.Root())
-		helpers = append(helpers, int(nibble)/16%2)
+		helpers = append(helpers, int(path)/16%2)
 		index := 0
 		for j := 0; j < 3; j++ {
 			// nibble / 8
 			// nibble / 4
 			// nibble / 2
 			inc := int(nibble) / (1 << (3 - j))
-			proofs = append(proofs, targetNode.Internals[index+inc])
+			proofs = append(proofs, targetNode.Internals[(index+inc)^1])
 			helpers = append(helpers, inc%2)
 			index += 1 << (j + 1)
 		}
 
+		neighborNode = targetNode.Children[nibble^1]
 		targetNode = targetNode.Children[nibble]
 		depth += 4
+	}
+	if neighborNode == nil {
+		proofs = append(proofs, tree.nilHashes[depth-4])
+	} else {
+		proofs = append(proofs, neighborNode.Root())
 	}
 	proofs = append(proofs, targetNode.Root())
 	helpers = append(helpers, int(key)%2)
 
 	return &Proof{
-		MerkleProof: proofs,
-		ProofHelper: helpers[1:],
+		MerkleProof: utils.ReverseBytes(proofs[1:]),
+		ProofHelper: utils.ReverseInts(helpers[1:]),
 	}, nil
 }
 
@@ -269,29 +298,24 @@ func (tree *BASSparseMerkleTree) VerifyProof(proof *Proof, version *Version) boo
 		return false
 	}
 
-	targetNode := tree.root
-	var depth uint8 = 0
-	for i := 0; i < len(proof.ProofHelper); i += 4 {
-		if !bytes.Equal(targetNode.Root(), proof.MerkleProof[i]) {
-			return false
-		}
-
-		index := proof.ProofHelper[i]
-		for j := 1; j < 3; j++ {
-			if !bytes.Equal(targetNode.Internals[index], proof.MerkleProof[i+j]) {
-				return false
-			}
-			index = index*2 + 2 + proof.ProofHelper[i+j]
-		}
-		index = index*2 + 4 - 16
-		if targetNode.Children[index] == nil {
-			tree.constructNode(targetNode, uint64(index), utils.BinaryToDecimal(proof.ProofHelper[:i]), depth)
-		}
-		targetNode = targetNode.Children[index]
-		depth += 4
+	if len(proof.MerkleProof) != len(proof.ProofHelper)+1 {
+		return false
 	}
 
-	return true
+	root := tree.Root()
+	node := proof.MerkleProof[0]
+	for i := 1; i < len(proof.MerkleProof); i++ {
+		switch proof.ProofHelper[i-1] {
+		case 0:
+			node = tree.hasher.Hash(node, proof.MerkleProof[i])
+		case 1:
+			node = tree.hasher.Hash(proof.MerkleProof[i], node)
+		default:
+			return false
+		}
+	}
+
+	return bytes.Equal(root, node)
 }
 
 func (tree *BASSparseMerkleTree) LatestVersion() Version {

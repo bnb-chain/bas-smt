@@ -7,6 +7,7 @@ func NewTreeNode(depth uint8, path uint64, nilHashes map[uint8][]byte, hasher *H
 		path:         path,
 		depth:        depth,
 		hasher:       hasher,
+		extended:     true,
 	}
 	for i := 0; i < 2; i++ {
 		treeNode.Internals[i] = nilHashes[depth+1]
@@ -33,6 +34,7 @@ type TreeNode struct {
 	path         uint64
 	depth        uint8
 	hasher       *Hasher
+	extended     bool
 }
 
 func (node *TreeNode) Root() []byte {
@@ -44,12 +46,21 @@ func (node *TreeNode) Root() []byte {
 
 func (node *TreeNode) Set(hash []byte, version Version) *TreeNode {
 	copied := node.Copy()
-	copied.Versions = append(node.Versions, &VersionInfo{
+	copied.newVersion(&VersionInfo{
 		Ver:  version,
 		Hash: hash,
 	})
 
 	return copied
+}
+
+func (node *TreeNode) newVersion(version *VersionInfo) {
+	if len(node.Versions) > 0 && node.Versions[len(node.Versions)-1].Ver == version.Ver {
+		// a new version already exists, overwrite it
+		node.Versions[len(node.Versions)-1] = version
+		return
+	}
+	node.Versions = append(node.Versions, version)
 }
 
 func (node *TreeNode) SetChildren(child *TreeNode, nibble int) *TreeNode {
@@ -60,7 +71,7 @@ func (node *TreeNode) SetChildren(child *TreeNode, nibble int) *TreeNode {
 
 // top-down
 func (node *TreeNode) ComputeInternalHash(version Version) {
-	// leaf node first
+	// leaf node
 	for i := 0; i < 15; i += 2 {
 		left, right := node.nilChildHash, node.nilChildHash
 		if node.Children[i] != nil {
@@ -69,26 +80,34 @@ func (node *TreeNode) ComputeInternalHash(version Version) {
 		if node.Children[i+1] != nil {
 			right = node.Children[i+1].Root()
 		}
-		node.Internals[5+i/2] = node.hasher.Hash(left, right)
+		node.Internals[6+i/2] = node.hasher.Hash(left, right)
 	}
 	// internal node
 	for i := 13; i > 1; i -= 2 {
 		node.Internals[i/2-1] = node.hasher.Hash(node.Internals[i-1], node.Internals[i])
 	}
 	// update current root node
-	node.Versions = append(node.Versions, &VersionInfo{
+	node.newVersion(&VersionInfo{
 		Ver:  version,
 		Hash: node.hasher.Hash(node.Internals[0], node.Internals[1]),
 	})
 }
 
+func (node *TreeNode) Extended() bool {
+	return node.extended
+}
+
 func (node *TreeNode) Copy() *TreeNode {
 	return &TreeNode{
-		Children:  node.Children,
-		Internals: node.Internals,
-		Versions:  node.Versions,
-		depth:     node.depth,
-		hasher:    node.hasher,
+		Children:     node.Children,
+		Internals:    node.Internals,
+		Versions:     node.Versions,
+		nilHash:      node.nilHash,
+		nilChildHash: node.nilChildHash,
+		path:         node.path,
+		depth:        node.depth,
+		hasher:       node.hasher,
+		extended:     node.extended,
 	}
 }
 
@@ -120,7 +139,14 @@ func (node *TreeNode) Rollback(targetVersion Version) bool {
 }
 
 func (node *TreeNode) ToStorageTreeNode() *StorageTreeNode {
+	var children [16]*StorageLeafNode
+	for i := 0; i < 16; i++ {
+		if node.Children[i] != nil {
+			children[i] = &StorageLeafNode{node.Children[i].Versions}
+		}
+	}
 	return &StorageTreeNode{
+		Children:  children,
 		Internals: node.Internals,
 		Versions:  node.Versions,
 	}
@@ -131,13 +157,18 @@ type VersionInfo struct {
 	Hash []byte
 }
 
+type StorageLeafNode struct {
+	Versions []*VersionInfo `rlp:"optional"`
+}
+
 type StorageTreeNode struct {
-	Internals [14]InternalNode `rlp:"optional"`
-	Versions  []*VersionInfo   `rlp:"optional"`
+	Children  [16]*StorageLeafNode `rlp:"optional"`
+	Internals [14]InternalNode     `rlp:"optional"`
+	Versions  []*VersionInfo       `rlp:"optional"`
 }
 
 func (node *StorageTreeNode) ToTreeNode(depth uint8, path uint64, nilHashes map[uint8][]byte, hasher *Hasher) *TreeNode {
-	return &TreeNode{
+	treeNode := &TreeNode{
 		Internals:    node.Internals,
 		Versions:     node.Versions,
 		nilHash:      nilHashes[depth],
@@ -145,5 +176,13 @@ func (node *StorageTreeNode) ToTreeNode(depth uint8, path uint64, nilHashes map[
 		path:         path,
 		depth:        depth,
 		hasher:       hasher,
+		extended:     true,
 	}
+	for i := 0; i < 16; i++ {
+		if node.Children[i] != nil {
+			treeNode.Children[i] = &TreeNode{Versions: node.Children[i].Versions}
+		}
+	}
+
+	return treeNode
 }
