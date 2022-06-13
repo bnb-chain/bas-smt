@@ -46,9 +46,17 @@ func prepareEnv(t *testing.T) []testEnv {
 }
 
 func testProof(t *testing.T, hasher *Hasher, db database.TreeDB) {
-	smt, err := NewBASSparseMerkleTree(hasher, db, 50, 8, nilHash)
+	smt, err := NewBASSparseMerkleTree(hasher, db, 8, nilHash)
 	if err != nil {
 		t.Fatal(err)
+	}
+
+	emptyProof, err := smt.GetProof(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !smt.VerifyProof(emptyProof) {
+		t.Fatal("verify empty proof failed")
 	}
 
 	key1 := uint64(0)
@@ -69,7 +77,7 @@ func testProof(t *testing.T, hasher *Hasher, db database.TreeDB) {
 	smt.Set(key2, val2)
 	smt.Set(key3, val3)
 
-	version, err = smt.Commit()
+	version, err = smt.Commit(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,35 +106,35 @@ func testProof(t *testing.T, hasher *Hasher, db database.TreeDB) {
 		t.Fatalf("not equal to the original, want: %v, got: %v", val3, hash3)
 	}
 
-	proof, err := smt.GetProof(key1, &version)
+	proof, err := smt.GetProof(key1)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if !smt.VerifyProof(proof, &version) {
+	if !smt.VerifyProof(proof) {
 		t.Fatal("verify proof1 failed")
 	}
 
-	proof, err = smt.GetProof(key2, &version)
+	proof, err = smt.GetProof(key2)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if !smt.VerifyProof(proof, &version) {
+	if !smt.VerifyProof(proof) {
 		t.Fatal("verify proof2 failed")
 	}
 
-	proof, err = smt.GetProof(key3, &version)
+	proof, err = smt.GetProof(key3)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if !smt.VerifyProof(proof, &version) {
+	if !smt.VerifyProof(proof) {
 		t.Fatal("verify proof3 failed")
 	}
 
 	// restore tree from db
-	smt2, err := NewBASSparseMerkleTree(hasher, db, 50, 8, nilHash)
+	smt2, err := NewBASSparseMerkleTree(hasher, db, 8, nilHash)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,30 +163,30 @@ func testProof(t *testing.T, hasher *Hasher, db database.TreeDB) {
 		t.Fatalf("not equal to the original, want: %v, got: %v", hash3, hash33)
 	}
 
-	proof, err = smt2.GetProof(key1, &version)
+	proof, err = smt2.GetProof(key1)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if !smt.VerifyProof(proof, &version) {
+	if !smt.VerifyProof(proof) {
 		t.Fatal("verify proof1 failed")
 	}
 
-	proof, err = smt2.GetProof(key2, &version)
+	proof, err = smt2.GetProof(key2)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if !smt.VerifyProof(proof, &version) {
+	if !smt.VerifyProof(proof) {
 		t.Fatal("verify proof2 failed")
 	}
 
-	proof, err = smt2.GetProof(key3, &version)
+	proof, err = smt2.GetProof(key3)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if !smt.VerifyProof(proof, &version) {
+	if !smt.VerifyProof(proof) {
 		t.Fatal("verify proof2 failed")
 	}
 }
@@ -191,7 +199,7 @@ func Test_BASSparseMerkleTree_Proof(t *testing.T) {
 }
 
 func testRollback(t *testing.T, hasher *Hasher, db database.TreeDB) {
-	smt, err := NewBASSparseMerkleTree(hasher, db, 50, 8, nilHash)
+	smt, err := NewBASSparseMerkleTree(hasher, db, 8, nilHash)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +213,7 @@ func testRollback(t *testing.T, hasher *Hasher, db database.TreeDB) {
 	smt.Set(key1, val1)
 	smt.Set(key2, val2)
 
-	version1, err := smt.Commit()
+	version1, err := smt.Commit(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +229,7 @@ func testRollback(t *testing.T, hasher *Hasher, db database.TreeDB) {
 	}
 
 	smt.Set(key3, val3)
-	version2, err := smt.Commit()
+	version2, err := smt.Commit(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,22 +249,12 @@ func testRollback(t *testing.T, hasher *Hasher, db database.TreeDB) {
 		t.Fatal(err)
 	}
 
-	_, err = smt.GetProof(key3, &version2)
-	if !errors.Is(err, ErrVersionTooHigh) {
-		t.Fatal(err)
-	}
-
 	// restore tree from db
-	smt2, err := NewBASSparseMerkleTree(hasher, db, 50, 8, nilHash)
+	smt2, err := NewBASSparseMerkleTree(hasher, db, 8, nilHash)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = smt2.Get(key3, &version2)
-	if !errors.Is(err, ErrVersionTooHigh) {
-		t.Fatal(err)
-	}
-
-	_, err = smt2.GetProof(key3, &version2)
 	if !errors.Is(err, ErrVersionTooHigh) {
 		t.Fatal(err)
 	}
@@ -270,7 +268,7 @@ func Test_BASSparseMerkleTree_Rollback(t *testing.T) {
 }
 
 func testReset(t *testing.T, hasher *Hasher, db database.TreeDB) {
-	smt, err := NewBASSparseMerkleTree(hasher, db, 50, 8, nilHash)
+	smt, err := NewBASSparseMerkleTree(hasher, db, 8, nilHash)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +282,7 @@ func testReset(t *testing.T, hasher *Hasher, db database.TreeDB) {
 	smt.Set(key1, val1)
 	smt.Set(key2, val2)
 
-	version1, err := smt.Commit()
+	version1, err := smt.Commit(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,7 +322,7 @@ func testZecrey(t *testing.T, hasher *Hasher, db database.TreeDB) {
 		t.Fatal(err)
 	}
 
-	bsmt, err := NewBASSparseMerkleTree(hasher, db, 50, 8, nilHash)
+	bsmt, err := NewBASSparseMerkleTree(hasher, db, 8, nilHash)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,18 +332,18 @@ func testZecrey(t *testing.T, hasher *Hasher, db database.TreeDB) {
 			t.Fatal(err)
 		}
 	}
-	version, err := bsmt.Commit()
+	_, err = bsmt.Commit(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	ex := hasher.Hash(hashState[4], hashState[5])
 	fmt.Println(ex)
-	bsmtProof, err := bsmt.GetProof(4, &version)
+	bsmtProof, err := bsmt.GetProof(4)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bsmt.VerifyProof(bsmtProof, &version) {
+	if !bsmt.VerifyProof(bsmtProof) {
 		t.Fatal("bsmt verify proof faild")
 	}
 
