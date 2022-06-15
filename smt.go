@@ -53,8 +53,7 @@ func NewBASSparseMerkleTree(hasher *Hasher, db database.TreeDB, maxDepth uint8, 
 	}
 
 	smt.db = db
-	smt.initFromStorage()
-	return smt, nil
+	return smt, smt.initFromStorage()
 }
 
 func constuctNilHashes(maxDepth uint8, nilHash []byte, hasher *Hasher) *nilHashes {
@@ -138,15 +137,18 @@ func (tree *BASSparseMerkleTree) initFromStorage() error {
 	return nil
 }
 
-func (tree *BASSparseMerkleTree) extendNode(node *TreeNode, nibble, path uint64, depth uint8) {
+func (tree *BASSparseMerkleTree) extendNode(node *TreeNode, nibble, path uint64, depth uint8) error {
 	if node.Children[nibble] == nil {
 		node.Children[nibble] = NewTreeNode(depth, path, tree.nilHashes, tree.hasher)
 	}
 	if depth < tree.maxDepth && // no need to extend leaf nodes
 		!node.Children[nibble].Extended() {
-		tree.constructNode(node, nibble, path, depth)
+		err := tree.constructNode(node, nibble, path, depth)
+		if err != nil {
+			return err
+		}
 	}
-
+	return nil
 }
 
 func (tree *BASSparseMerkleTree) constructNode(node *TreeNode, nibble, path uint64, depth uint8) error {
@@ -225,7 +227,9 @@ func (tree *BASSparseMerkleTree) Set(key uint64, val []byte) error {
 		path := key >> (int(tree.maxDepth) - (i+1)*4)
 		nibble := path & 0x000000000000000f
 		parentNodes = append(parentNodes, targetNode)
-		tree.extendNode(targetNode, nibble, path, depth)
+		if err := tree.extendNode(targetNode, nibble, path, depth); err != nil {
+			return err
+		}
 		targetNode = targetNode.Children[nibble]
 
 		depth += 4
@@ -274,7 +278,9 @@ func (tree *BASSparseMerkleTree) GetProof(key uint64) (*Proof, error) {
 	for i := 0; i < int(tree.maxDepth)/4; i++ {
 		path := key >> (int(tree.maxDepth) - (i+1)*4)
 		nibble := path & 0x000000000000000f
-		tree.extendNode(targetNode, nibble, path, depth)
+		if err := tree.extendNode(targetNode, nibble, path, depth); err != nil {
+			return nil, err
+		}
 
 		if neighborNode == nil {
 			proofs = append(proofs, tree.nilHashes.Get(depth-4))
