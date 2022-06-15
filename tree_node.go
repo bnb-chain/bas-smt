@@ -1,22 +1,22 @@
 package bsmt
 
-func NewTreeNode(depth uint8, path uint64, nilHashes map[uint8][]byte, hasher *Hasher) *TreeNode {
+func NewTreeNode(depth uint8, path uint64, nilHashes *nilHashes, hasher *Hasher) *TreeNode {
 	treeNode := &TreeNode{
-		nilHash:      nilHashes[depth],
-		nilChildHash: nilHashes[depth+4],
+		nilHash:      nilHashes.Get(depth),
+		nilChildHash: nilHashes.Get(depth + 4),
 		path:         path,
 		depth:        depth,
 		hasher:       hasher,
 		extended:     true,
 	}
 	for i := 0; i < 2; i++ {
-		treeNode.Internals[i] = nilHashes[depth+1]
+		treeNode.Internals[i] = nilHashes.Get(depth + 1)
 	}
 	for i := 2; i < 6; i++ {
-		treeNode.Internals[i] = nilHashes[depth+2]
+		treeNode.Internals[i] = nilHashes.Get(depth + 2)
 	}
-	for i := 6; i < 13; i++ {
-		treeNode.Internals[i] = nilHashes[depth+3]
+	for i := 6; i < 14; i++ {
+		treeNode.Internals[i] = nilHashes.Get(depth + 3)
 	}
 
 	return treeNode
@@ -44,7 +44,7 @@ func (node *TreeNode) Root() []byte {
 	return node.Versions[len(node.Versions)-1].Hash
 }
 
-func (node *TreeNode) Set(hash []byte, version Version) *TreeNode {
+func (node *TreeNode) set(hash []byte, version Version) *TreeNode {
 	copied := node.Copy()
 	copied.newVersion(&VersionInfo{
 		Ver:  version,
@@ -63,14 +63,51 @@ func (node *TreeNode) newVersion(version *VersionInfo) {
 	node.Versions = append(node.Versions, version)
 }
 
-func (node *TreeNode) SetChildren(child *TreeNode, nibble int) *TreeNode {
+func (node *TreeNode) setChildren(child *TreeNode, nibble int, version Version) *TreeNode {
 	copied := node.Copy()
 	copied.Children[nibble] = child
+
+	left, right := copied.nilChildHash, copied.nilChildHash
+	switch nibble % 2 {
+	case 0:
+		if copied.Children[nibble] != nil {
+			left = copied.Children[nibble].Root()
+		}
+		if copied.Children[nibble^1] != nil {
+			right = copied.Children[nibble^1].Root()
+		}
+	case 1:
+		if copied.Children[nibble] != nil {
+			right = copied.Children[nibble].Root()
+		}
+		if copied.Children[nibble^1] != nil {
+			left = copied.Children[nibble^1].Root()
+		}
+	}
+	prefix := 6
+	for i := 4; i >= 1; i >>= 1 {
+		nibble = nibble / 2
+		copied.Internals[prefix+nibble] = copied.hasher.Hash(left, right)
+		switch nibble % 2 {
+		case 0:
+			left = copied.Internals[prefix+nibble]
+			right = copied.Internals[prefix+nibble^1]
+		case 1:
+			right = copied.Internals[prefix+nibble]
+			left = copied.Internals[prefix+nibble^1]
+		}
+		prefix = prefix - i
+	}
+	// update current root node
+	copied.newVersion(&VersionInfo{
+		Ver:  version,
+		Hash: copied.hasher.Hash(copied.Internals[0], copied.Internals[1]),
+	})
 	return copied
 }
 
-// top-down
-func (node *TreeNode) ComputeInternalHash(version Version) {
+// Recompute all internal hashes
+func (node *TreeNode) computeInternalHash() {
 	// leaf node
 	for i := 0; i < 15; i += 2 {
 		left, right := node.nilChildHash, node.nilChildHash
@@ -86,11 +123,6 @@ func (node *TreeNode) ComputeInternalHash(version Version) {
 	for i := 13; i > 1; i -= 2 {
 		node.Internals[i/2-1] = node.hasher.Hash(node.Internals[i-1], node.Internals[i])
 	}
-	// update current root node
-	node.newVersion(&VersionInfo{
-		Ver:  version,
-		Hash: node.hasher.Hash(node.Internals[0], node.Internals[1]),
-	})
 }
 
 func (node *TreeNode) Extended() bool {
@@ -121,23 +153,29 @@ func (node *TreeNode) Prune(oldestVersion Version) {
 			break
 		}
 	}
+
+	if i > 0 && node.Versions[i].Ver > oldestVersion {
+		node.Versions = node.Versions[i-1:]
+		return
+	}
+
 	node.Versions = node.Versions[i:]
 }
 
 func (node *TreeNode) Rollback(targetVersion Version) bool {
-	next := false
 	if len(node.Versions) == 0 {
 		return false
 	}
+	var next bool
 	i := len(node.Versions) - 1
-	for ; i > 0; i-- {
+	for ; i >= 0; i-- {
 		if node.Versions[i].Ver <= targetVersion {
 			break
 		}
 		next = true
 	}
-	node.Versions = node.Versions[:i]
-
+	node.Versions = node.Versions[:i+1]
+	node.computeInternalHash()
 	return next
 }
 
@@ -170,12 +208,12 @@ type StorageTreeNode struct {
 	Versions  []*VersionInfo       `rlp:"optional"`
 }
 
-func (node *StorageTreeNode) ToTreeNode(depth uint8, path uint64, nilHashes map[uint8][]byte, hasher *Hasher) *TreeNode {
+func (node *StorageTreeNode) ToTreeNode(depth uint8, path uint64, nilHashes *nilHashes, hasher *Hasher) *TreeNode {
 	treeNode := &TreeNode{
 		Internals:    node.Internals,
 		Versions:     node.Versions,
-		nilHash:      nilHashes[depth],
-		nilChildHash: nilHashes[depth+4],
+		nilHash:      nilHashes.Get(depth),
+		nilChildHash: nilHashes.Get(depth + 4),
 		path:         path,
 		depth:        depth,
 		hasher:       hasher,
@@ -185,8 +223,8 @@ func (node *StorageTreeNode) ToTreeNode(depth uint8, path uint64, nilHashes map[
 		if node.Children[i] != nil {
 			treeNode.Children[i] = &TreeNode{
 				Versions:     node.Children[i].Versions,
-				nilHash:      nilHashes[depth+4],
-				nilChildHash: nilHashes[depth+8],
+				nilHash:      nilHashes.Get(depth + 4),
+				nilChildHash: nilHashes.Get(depth + 8),
 			}
 		}
 	}

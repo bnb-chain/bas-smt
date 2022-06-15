@@ -29,12 +29,12 @@ func (db *MemoryDB) Get(key []byte) ([]byte, error) {
 	defer db.lock.RUnlock()
 
 	if db.db == nil {
-		return nil, ErrDatabaseClosed
+		return nil, database.ErrDatabaseClosed
 	}
 	if entry, ok := db.db[string(key)]; ok {
 		return utils.CopyBytes(entry), nil
 	}
-	return nil, ErrDatabaseNotFound
+	return nil, database.ErrDatabaseNotFound
 }
 
 func (db *MemoryDB) Has(key []byte) (bool, error) {
@@ -42,7 +42,7 @@ func (db *MemoryDB) Has(key []byte) (bool, error) {
 	defer db.lock.RUnlock()
 
 	if db.db == nil {
-		return false, ErrDatabaseClosed
+		return false, database.ErrDatabaseClosed
 	}
 	_, ok := db.db[string(key)]
 	return ok, nil
@@ -53,7 +53,7 @@ func (db *MemoryDB) Set(key []byte, value []byte) error {
 	defer db.lock.Unlock()
 
 	if db.db == nil {
-		return ErrDatabaseClosed
+		return database.ErrDatabaseClosed
 	}
 	db.db[string(key)] = utils.CopyBytes(value)
 	return nil
@@ -64,7 +64,7 @@ func (db *MemoryDB) Delete(key []byte) error {
 	defer db.lock.Unlock()
 
 	if db.db == nil {
-		return ErrDatabaseClosed
+		return database.ErrDatabaseClosed
 	}
 	delete(db.db, string(key))
 	return nil
@@ -127,6 +127,11 @@ func (b *batch) Write() error {
 		b.db.db[string(keyvalue.key)] = keyvalue.value
 	}
 	return nil
+}
+
+// ValueSize retrieves the amount of data queued up for writing.
+func (b *batch) ValueSize() int {
+	return b.size
 }
 
 // Reset resets the batch for reuse.

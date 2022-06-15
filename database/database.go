@@ -32,5 +32,8 @@ type (
 
 		// Reset resets the batch for reuse.
 		Reset()
+
+		// ValueSize retrieves the amount of data queued up for writing.
+		ValueSize() int
 	}
 )
