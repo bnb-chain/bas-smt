@@ -7,7 +7,6 @@ func NewTreeNode(depth uint8, path uint64, nilHashes *nilHashes, hasher *Hasher)
 		path:         path,
 		depth:        depth,
 		hasher:       hasher,
-		extended:     true,
 	}
 	for i := 0; i < 2; i++ {
 		treeNode.Internals[i] = nilHashes.Get(depth + 1)
@@ -34,7 +33,7 @@ type TreeNode struct {
 	path         uint64
 	depth        uint8
 	hasher       *Hasher
-	extended     bool
+	temporary    bool
 }
 
 func (node *TreeNode) Root() []byte {
@@ -125,10 +124,6 @@ func (node *TreeNode) computeInternalHash() {
 	}
 }
 
-func (node *TreeNode) Extended() bool {
-	return node.extended
-}
-
 func (node *TreeNode) Copy() *TreeNode {
 	return &TreeNode{
 		Children:     node.Children,
@@ -139,11 +134,14 @@ func (node *TreeNode) Copy() *TreeNode {
 		path:         node.path,
 		depth:        node.depth,
 		hasher:       node.hasher,
-		extended:     node.extended,
+		temporary:    node.temporary,
 	}
 }
 
 func (node *TreeNode) Prune(oldestVersion Version) {
+	// If the Child Node has not been updated for a long time, it will be released from memory
+	defer node.release(oldestVersion)
+
 	if len(node.Versions) <= 1 {
 		return
 	}
@@ -177,6 +175,40 @@ func (node *TreeNode) Rollback(targetVersion Version) bool {
 	node.Versions = node.Versions[:i+1]
 	node.computeInternalHash()
 	return next
+}
+
+func (node *TreeNode) size() uint64 {
+	if node == nil {
+		return 0
+	}
+	size := uint64(32 * len(node.Internals))
+	size += uint64(32 * len(node.Versions))
+	for i := 0; i < len(node.Children); i++ {
+		if node.Children[i] != nil {
+			size += node.Children[i].size()
+		}
+	}
+	return size
+}
+
+// Release nodes that have not been updated for a long time from memory.
+// slowing down memory usage in runtime.
+func (node *TreeNode) release(oldestVersion Version) {
+	for i := 0; i < len(node.Children); i++ {
+		if node.Children[i] != nil {
+			length := len(node.Children[i].Versions)
+			if length > 0 && node.Children[i].Versions[length-1].Ver < oldestVersion {
+				// check for the latest version and release it if it is older than the pruned version
+				node.Children[i] = nil
+			}
+		}
+	}
+}
+
+// The child node read from the storage belongs to the temporary state.
+// will be extended when it needs to be searched down.
+func (node *TreeNode) IsTemporary() bool {
+	return node.temporary
 }
 
 func (node *TreeNode) ToStorageTreeNode() *StorageTreeNode {
@@ -217,7 +249,6 @@ func (node *StorageTreeNode) ToTreeNode(depth uint8, path uint64, nilHashes *nil
 		path:         path,
 		depth:        depth,
 		hasher:       hasher,
-		extended:     true,
 	}
 	for i := 0; i < 16; i++ {
 		if node.Children[i] != nil {
@@ -225,6 +256,7 @@ func (node *StorageTreeNode) ToTreeNode(depth uint8, path uint64, nilHashes *nil
 				Versions:     node.Children[i].Versions,
 				nilHash:      nilHashes.Get(depth + 4),
 				nilChildHash: nilHashes.Get(depth + 8),
+				temporary:    true,
 			}
 		}
 	}
