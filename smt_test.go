@@ -23,6 +23,7 @@ var (
 )
 
 type testEnv struct {
+	tag    string
 	hasher *Hasher
 	db     database.TreeDB
 }
@@ -41,10 +42,12 @@ func prepareEnv(t *testing.T) []testEnv {
 	})
 	return []testEnv{
 		{
+			tag:    "memoryDB",
 			hasher: &Hasher{sha256.New()},
 			db:     memory.NewMemoryDB(),
 		},
 		{
+			tag:    "levelDB",
 			hasher: &Hasher{sha256.New()},
 			db:     wrappedLevelDB.WrapWithNamespace(wrappedLevelDB.NewFromExistLevelDB(db), "test"),
 		},
@@ -84,12 +87,23 @@ func testProof(t *testing.T, hasher *Hasher, db database.TreeDB) {
 	val2 := hasher.Hash([]byte("test2"))
 	val3 := hasher.Hash([]byte("test3"))
 	smt.Set(key1, val1)
+	version1, err := smt.Commit(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	smt.Set(key2, val2)
-	smt.Set(key3, val3)
-
 	version, err = smt.Commit(nil)
 	if err != nil {
 		t.Fatal(err)
+	}
+	smt.Set(key3, val3)
+	version, err = smt.Commit(&version1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if recentVer := smt.(*BASSparseMerkleTree).recentVersion; recentVer != version1 {
+		t.Fatalf("recentVersion does not match, want: %v, got: %v", version1, recentVer)
 	}
 
 	hash1, err := smt.Get(key1, &version)
@@ -203,6 +217,7 @@ func testProof(t *testing.T, hasher *Hasher, db database.TreeDB) {
 
 func Test_BASSparseMerkleTree_Proof(t *testing.T) {
 	for _, env := range prepareEnv(t) {
+		t.Logf("test [%s]", env.tag)
 		testProof(t, env.hasher, env.db)
 		env.db.Close()
 	}
@@ -284,6 +299,7 @@ func testRollback(t *testing.T, hasher *Hasher, db database.TreeDB) {
 
 func Test_BASSparseMerkleTree_Rollback(t *testing.T) {
 	for _, env := range prepareEnv(t) {
+		t.Logf("test [%s]", env.tag)
 		testRollback(t, env.hasher, env.db)
 		env.db.Close()
 	}
@@ -325,7 +341,108 @@ func testReset(t *testing.T, hasher *Hasher, db database.TreeDB) {
 
 func Test_BASSparseMerkleTree_Reset(t *testing.T) {
 	for _, env := range prepareEnv(t) {
+		t.Logf("test [%s]", env.tag)
 		testReset(t, env.hasher, env.db)
+		env.db.Close()
+	}
+}
+
+func testGC(t *testing.T, hasher *Hasher, db database.TreeDB) {
+	smt, err := NewBASSparseMerkleTree(hasher, db, 8, nilHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	testKVData := []struct {
+		key uint64
+		val []byte
+	}{
+		{1, hasher.Hash([]byte("val1"))},
+		{2, hasher.Hash([]byte("val2"))},
+		{3, hasher.Hash([]byte("val3"))},
+		{4, hasher.Hash([]byte("val4"))},
+		{5, hasher.Hash([]byte("val5"))},
+		{6, hasher.Hash([]byte("val6"))},
+		{7, hasher.Hash([]byte("val7"))},
+		{8, hasher.Hash([]byte("val8"))},
+		{9, hasher.Hash([]byte("val9"))},
+		{10, hasher.Hash([]byte("val10"))},
+		{11, hasher.Hash([]byte("val11"))},
+		{12, hasher.Hash([]byte("val12"))},
+		{13, hasher.Hash([]byte("val13"))},
+		{14, hasher.Hash([]byte("val14"))},
+		{200, hasher.Hash([]byte("val200"))},
+		{20, hasher.Hash([]byte("val20"))},
+		{21, hasher.Hash([]byte("val21"))},
+		{22, hasher.Hash([]byte("val22"))},
+		{23, hasher.Hash([]byte("val23"))},
+		{24, hasher.Hash([]byte("val24"))},
+		{26, hasher.Hash([]byte("val26"))},
+		{37, hasher.Hash([]byte("val37"))},
+		{255, hasher.Hash([]byte("val255"))},
+		{15, hasher.Hash([]byte("val15"))},
+	}
+
+	t.Log("set data")
+	for version, testData := range testKVData {
+		smt.Set(testData.key, testData.val)
+		if version >= 2 {
+			pruneVer := Version(version - 1)
+			_, err = smt.Commit(&pruneVer)
+			if err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			_, err = smt.Commit(nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		t.Log("tree.Size() = ", smt.Size())
+	}
+
+	t.Log("verify proofs")
+	for _, testData := range testKVData {
+		proof, err := smt.GetProof(testData.key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !smt.VerifyProof(testData.key, proof) {
+			t.Fatalf("verify proof of key [%d] failed", testData.key)
+		}
+		t.Log("tree.Size() = ", smt.Size())
+	}
+
+	t.Log("test gc")
+	smt.Set(0, hasher.Hash([]byte("val0")))
+	pruneVer := Version(len(testKVData) - 2)
+	_, err = smt.Commit(&pruneVer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Log("tree.Size() = ", smt.Size())
+	proof, err := smt.GetProof(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !smt.VerifyProof(0, proof) {
+		t.Fatalf("verify proof of key [%d] failed", 0)
+	}
+
+	proof, err = smt.GetProof(200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !smt.VerifyProof(200, proof) {
+		t.Fatalf("verify proof of key [%d] failed", 200)
+	}
+}
+
+func Test_BASSparseMerkleTree_GC(t *testing.T) {
+	for _, env := range prepareEnv(t) {
+		t.Logf("test [%s]", env.tag)
+		testGC(t, env.hasher, env.db)
 		env.db.Close()
 	}
 }

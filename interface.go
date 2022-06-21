@@ -3,6 +3,7 @@ package bsmt
 type (
 	Version          uint64
 	SparseMerkleTree interface {
+		Size() uint64
 		Get(key uint64, version *Version) ([]byte, error)
 		Set(key uint64, val []byte) error
 		IsEmpty() bool
