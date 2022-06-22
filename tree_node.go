@@ -1,5 +1,9 @@
 package bsmt
 
+const (
+	hashSize = 32
+)
+
 func NewTreeNode(depth uint8, path uint64, nilHashes *nilHashes, hasher *Hasher) *TreeNode {
 	treeNode := &TreeNode{
 		nilHash:      nilHashes.Get(depth),
@@ -32,6 +36,7 @@ type TreeNode struct {
 	nilChildHash []byte
 	path         uint64
 	depth        uint8
+	nodeSize     uint64
 	hasher       *Hasher
 	temporary    bool
 }
@@ -60,6 +65,7 @@ func (node *TreeNode) newVersion(version *VersionInfo) {
 		return
 	}
 	node.Versions = append(node.Versions, version)
+	node.nodeSize = uint64(hashSize*len(node.Internals)) + uint64(hashSize*len(node.Versions))
 }
 
 func (node *TreeNode) setChildren(child *TreeNode, nibble int, version Version) *TreeNode {
@@ -132,6 +138,7 @@ func (node *TreeNode) Copy() *TreeNode {
 		nilHash:      node.nilHash,
 		nilChildHash: node.nilChildHash,
 		path:         node.path,
+		nodeSize:     node.nodeSize,
 		depth:        node.depth,
 		hasher:       node.hasher,
 		temporary:    node.temporary,
@@ -139,9 +146,6 @@ func (node *TreeNode) Copy() *TreeNode {
 }
 
 func (node *TreeNode) Prune(oldestVersion Version) {
-	// If the Child Node has not been updated for a long time, it will be released from memory
-	defer node.release(oldestVersion)
-
 	if len(node.Versions) <= 1 {
 		return
 	}
@@ -158,6 +162,7 @@ func (node *TreeNode) Prune(oldestVersion Version) {
 	}
 
 	node.Versions = node.Versions[i:]
+	node.nodeSize = uint64(hashSize*len(node.Internals)) + uint64(hashSize*len(node.Versions))
 }
 
 func (node *TreeNode) Rollback(targetVersion Version) bool {
@@ -174,35 +179,60 @@ func (node *TreeNode) Rollback(targetVersion Version) bool {
 	}
 	node.Versions = node.Versions[:i+1]
 	node.computeInternalHash()
+	node.nodeSize = uint64(hashSize*len(node.Internals)) + uint64(hashSize*len(node.Versions))
 	return next
 }
 
-func (node *TreeNode) size() uint64 {
+func (node *TreeNode) size(oldestVersion Version) (uint64, uint64) {
 	if node == nil {
-		return 0
+		return 0, 0
 	}
-	size := uint64(32 * len(node.Internals))
-	size += uint64(32 * len(node.Versions))
+	releasableSize := uint64(0)
+	size := node.nodeSize
 	for i := 0; i < len(node.Children); i++ {
 		if node.Children[i] != nil {
-			size += node.Children[i].size()
+			length := len(node.Children[i].Versions)
+			if length > 0 && node.Children[i].Versions[length-1].Ver < oldestVersion {
+				releasableSize += node.Children[i].nodeSize
+			}
+
+			childSize, childRelSize := node.Children[i].size(oldestVersion)
+			size += childSize
+			releasableSize += childRelSize
 		}
 	}
-	return size
+	return size, releasableSize
+}
+
+func (node *TreeNode) archive() {
+	for i := 0; i < len(node.Internals); i++ {
+		node.Internals[i] = nil
+	}
+	for i := 0; i < len(node.Children); i++ {
+		node.Children[i] = nil
+	}
+	node.nodeSize = uint64(hashSize * len(node.Versions))
+	node.temporary = true
 }
 
 // Release nodes that have not been updated for a long time from memory.
 // slowing down memory usage in runtime.
-func (node *TreeNode) release(oldestVersion Version) {
+func (node *TreeNode) release(oldestVersion Version) uint64 {
+	size := uint64(0)
 	for i := 0; i < len(node.Children); i++ {
 		if node.Children[i] != nil {
 			length := len(node.Children[i].Versions)
 			if length > 0 && node.Children[i].Versions[length-1].Ver < oldestVersion {
 				// check for the latest version and release it if it is older than the pruned version
-				node.Children[i] = nil
+				originSize := node.Children[i].nodeSize
+				node.Children[i].archive()
+				size += originSize - node.Children[i].nodeSize
+			} else {
+				size += node.Children[i].release(oldestVersion)
 			}
 		}
 	}
+	return size
 }
 
 // The child node read from the storage belongs to the temporary state.
@@ -246,6 +276,7 @@ func (node *StorageTreeNode) ToTreeNode(depth uint8, path uint64, nilHashes *nil
 		Versions:     node.Versions,
 		nilHash:      nilHashes.Get(depth),
 		nilChildHash: nilHashes.Get(depth + 4),
+		nodeSize:     uint64(hashSize*len(node.Internals)) + uint64(hashSize*len(node.Versions)),
 		path:         path,
 		depth:        depth,
 		hasher:       hasher,
@@ -256,6 +287,7 @@ func (node *StorageTreeNode) ToTreeNode(depth uint8, path uint64, nilHashes *nil
 				Versions:     node.Children[i].Versions,
 				nilHash:      nilHashes.Get(depth + 4),
 				nilChildHash: nilHashes.Get(depth + 8),
+				nodeSize:     uint64(hashSize * len(node.Versions)),
 				temporary:    true,
 			}
 		}

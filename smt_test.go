@@ -52,6 +52,7 @@ func prepareEnv(t *testing.T) []testEnv {
 			db:     wrappedLevelDB.WrapWithNamespace(wrappedLevelDB.NewFromExistLevelDB(db), "test"),
 		},
 		{
+			tag:    "redis",
 			hasher: &Hasher{sha256.New()},
 			db:     wrappedRedis.WrapWithNamespace(wrappedRedis.NewFromExistRedisClient(client), "test"),
 		},
@@ -348,7 +349,8 @@ func Test_BASSparseMerkleTree_Reset(t *testing.T) {
 }
 
 func testGC(t *testing.T, hasher *Hasher, db database.TreeDB) {
-	smt, err := NewBASSparseMerkleTree(hasher, db, 8, nilHash)
+	smt, err := NewBASSparseMerkleTree(hasher, db, 8, nilHash,
+		GCThreshold(1024*10))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -380,6 +382,14 @@ func testGC(t *testing.T, hasher *Hasher, db database.TreeDB) {
 		{26, hasher.Hash([]byte("val26"))},
 		{37, hasher.Hash([]byte("val37"))},
 		{255, hasher.Hash([]byte("val255"))},
+		{254, hasher.Hash([]byte("val254"))},
+		{253, hasher.Hash([]byte("val253"))},
+		{252, hasher.Hash([]byte("val252"))},
+		{251, hasher.Hash([]byte("val251"))},
+		{250, hasher.Hash([]byte("val250"))},
+		{249, hasher.Hash([]byte("val249"))},
+		{248, hasher.Hash([]byte("val248"))},
+		{247, hasher.Hash([]byte("val247"))},
 		{15, hasher.Hash([]byte("val15"))},
 	}
 
