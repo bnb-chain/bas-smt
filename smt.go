@@ -92,6 +92,12 @@ type journalKey struct {
 	path  uint64
 }
 
+// status for GC.
+// In the Commit() stage, the version and releasable size will be recorded,
+// the size of the current version tree exceeds the threshold and starts to trigger GC.
+// The recorded size of the version is divided into 10 stages of threshold,
+// each 10% is a partition, and if it exceeds 100%, it is recorded in the last partition.
+// When the GC is triggered, the collection will start from the minimum collection size.
 type gcStatus struct {
 	versions  [10]Version
 	sizes     [10]uint64

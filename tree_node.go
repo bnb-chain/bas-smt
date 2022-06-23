@@ -204,6 +204,8 @@ func (node *TreeNode) size(oldestVersion Version) (uint64, uint64) {
 	return size, releasableSize
 }
 
+// The node has not been updated for a long time,
+// the subtree is emptied, and needs to be re-read from the database when it needs to be modified.
 func (node *TreeNode) archive() {
 	for i := 0; i < len(node.Internals); i++ {
 		node.Internals[i] = nil
@@ -235,7 +237,7 @@ func (node *TreeNode) release(oldestVersion Version) uint64 {
 	return size
 }
 
-// The child node read from the storage belongs to the temporary state.
+// The nodes without child data.
 // will be extended when it needs to be searched down.
 func (node *TreeNode) IsTemporary() bool {
 	return node.temporary
