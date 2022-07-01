@@ -65,7 +65,7 @@ func (node *TreeNode) newVersion(version *VersionInfo) {
 		return
 	}
 	node.Versions = append(node.Versions, version)
-	node.nodeSize = uint64(hashSize*len(node.Internals)) + uint64(hashSize*len(node.Versions))
+	node.nodeSize += hashSize
 }
 
 func (node *TreeNode) setChildren(child *TreeNode, nibble int, version Version) *TreeNode {
