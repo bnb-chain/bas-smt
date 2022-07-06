@@ -1,7 +1,8 @@
 package bsmt
 
 const (
-	hashSize = 32
+	hashSize    = 32
+	versionSize = 40
 )
 
 func NewTreeNode(depth uint8, path uint64, nilHashes *nilHashes, hasher *Hasher) *TreeNode {
@@ -36,7 +37,6 @@ type TreeNode struct {
 	nilChildHash []byte
 	path         uint64
 	depth        uint8
-	nodeSize     uint64
 	hasher       *Hasher
 	temporary    bool
 }
@@ -65,7 +65,6 @@ func (node *TreeNode) newVersion(version *VersionInfo) {
 		return
 	}
 	node.Versions = append(node.Versions, version)
-	node.nodeSize += hashSize
 }
 
 func (node *TreeNode) setChildren(child *TreeNode, nibble int, version Version) *TreeNode {
@@ -138,16 +137,15 @@ func (node *TreeNode) Copy() *TreeNode {
 		nilHash:      node.nilHash,
 		nilChildHash: node.nilChildHash,
 		path:         node.path,
-		nodeSize:     node.nodeSize,
 		depth:        node.depth,
 		hasher:       node.hasher,
 		temporary:    node.temporary,
 	}
 }
 
-func (node *TreeNode) Prune(oldestVersion Version) {
+func (node *TreeNode) Prune(oldestVersion Version) uint64 {
 	if len(node.Versions) <= 1 {
-		return
+		return 0
 	}
 	i := 0
 	for ; i < len(node.Versions)-1; i++ {
@@ -156,20 +154,22 @@ func (node *TreeNode) Prune(oldestVersion Version) {
 		}
 	}
 
+	originSize := len(node.Versions) * versionSize
 	if i > 0 && node.Versions[i].Ver > oldestVersion {
 		node.Versions = node.Versions[i-1:]
-		return
+		return uint64(originSize - len(node.Versions)*versionSize)
 	}
 
 	node.Versions = node.Versions[i:]
-	node.nodeSize = uint64(hashSize*len(node.Internals)) + uint64(hashSize*len(node.Versions))
+	return uint64(originSize - len(node.Versions)*versionSize)
 }
 
-func (node *TreeNode) Rollback(targetVersion Version) bool {
+func (node *TreeNode) Rollback(targetVersion Version) (bool, uint64) {
 	if len(node.Versions) == 0 {
-		return false
+		return false, 0
 	}
 	var next bool
+	originSize := len(node.Versions) * versionSize
 	i := len(node.Versions) - 1
 	for ; i >= 0; i-- {
 		if node.Versions[i].Ver <= targetVersion {
@@ -179,29 +179,7 @@ func (node *TreeNode) Rollback(targetVersion Version) bool {
 	}
 	node.Versions = node.Versions[:i+1]
 	node.computeInternalHash()
-	node.nodeSize = uint64(hashSize*len(node.Internals)) + uint64(hashSize*len(node.Versions))
-	return next
-}
-
-func (node *TreeNode) size(oldestVersion Version) (uint64, uint64) {
-	if node == nil {
-		return 0, 0
-	}
-	releasableSize := uint64(0)
-	size := node.nodeSize
-	for i := 0; i < len(node.Children); i++ {
-		if node.Children[i] != nil {
-			length := len(node.Children[i].Versions)
-			if length > 0 && node.Children[i].Versions[length-1].Ver < oldestVersion {
-				releasableSize += node.Children[i].nodeSize
-			}
-
-			childSize, childRelSize := node.Children[i].size(oldestVersion)
-			size += childSize
-			releasableSize += childRelSize
-		}
-	}
-	return size, releasableSize
+	return next, uint64(originSize - len(node.Versions)*versionSize)
 }
 
 // The node has not been updated for a long time,
@@ -213,22 +191,36 @@ func (node *TreeNode) archive() {
 	for i := 0; i < len(node.Children); i++ {
 		node.Children[i] = nil
 	}
-	node.nodeSize = uint64(hashSize * len(node.Versions))
 	node.temporary = true
+}
+
+// previousVersion returns the previous version number in the current TreeNode
+func (node *TreeNode) previousVersion() Version {
+	if len(node.Versions) <= 1 {
+		return 0
+	}
+	return node.Versions[len(node.Versions)-2].Ver
+}
+
+// size returns the current node size
+func (node *TreeNode) size() uint64 {
+	if node.temporary {
+		return uint64(len(node.Versions) * versionSize)
+	}
+	return uint64(len(node.Versions)*versionSize + hashSize*len(node.Internals))
 }
 
 // Release nodes that have not been updated for a long time from memory.
 // slowing down memory usage in runtime.
 func (node *TreeNode) release(oldestVersion Version) uint64 {
-	size := uint64(0)
+	size := node.size()
 	for i := 0; i < len(node.Children); i++ {
 		if node.Children[i] != nil {
 			length := len(node.Children[i].Versions)
 			if length > 0 && node.Children[i].Versions[length-1].Ver < oldestVersion {
 				// check for the latest version and release it if it is older than the pruned version
-				originSize := node.Children[i].nodeSize
 				node.Children[i].archive()
-				size += originSize - node.Children[i].nodeSize
+				size += node.Children[i].size()
 			} else {
 				size += node.Children[i].release(oldestVersion)
 			}
@@ -278,7 +270,6 @@ func (node *StorageTreeNode) ToTreeNode(depth uint8, path uint64, nilHashes *nil
 		Versions:     node.Versions,
 		nilHash:      nilHashes.Get(depth),
 		nilChildHash: nilHashes.Get(depth + 4),
-		nodeSize:     uint64(hashSize*len(node.Internals)) + uint64(hashSize*len(node.Versions)),
 		path:         path,
 		depth:        depth,
 		hasher:       hasher,
@@ -289,7 +280,6 @@ func (node *StorageTreeNode) ToTreeNode(depth uint8, path uint64, nilHashes *nil
 				Versions:     node.Children[i].Versions,
 				nilHash:      nilHashes.Get(depth + 4),
 				nilChildHash: nilHashes.Get(depth + 8),
-				nodeSize:     uint64(hashSize * len(node.Versions)),
 				temporary:    true,
 			}
 		}
